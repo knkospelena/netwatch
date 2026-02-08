@@ -1,6 +1,6 @@
 from scapy.all import sniff, IP, TCP, UDP, ICMP, ARP, DNS
 from logger import log_packet
-from datetime import datetime
+from datetime import datetime, timezone
 import signal, sys, time
 from collections import defaultdict
 
@@ -28,7 +28,7 @@ dns_tracker = defaultdict(list)
 
 # ---------------- ALERT ----------------
 def alert(level, message):
-    timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     msg = f"[ALERT][{level}][{timestamp} UTC] {message}"
     print(msg)
     log_packet(msg)
@@ -36,7 +36,7 @@ def alert(level, message):
 # ---------------- PACKET HANDLER ----------------
 def process_packet(packet):
     now = time.time()
-    timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
     # -------- ARP --------
     if packet.haslayer(ARP):
