@@ -1,116 +1,125 @@
 from scapy.all import sniff, IP, TCP, UDP, ICMP, ARP, DNS
 from logger import log_packet
 from datetime import datetime
-import signal, sys
+import signal, sys, time
+from collections import defaultdict
 
-# ---- counters ----
-stats = {
-    "TOTAL": 0,
-    "TCP": 0,
-    "UDP": 0,
-    "ICMP": 0,
-    "ARP": 0,
-    "DNS": 0
-}
+# ---------------- CONFIG ----------------
+INTERFACE = "eth0"
+PORT_SCAN_THRESHOLD = 20
+SSH_BRUTE_THRESHOLD = 10
+ICMP_THRESHOLD = 30
+DNS_THRESHOLD = 50
+TIME_WINDOW = 10  # seconds
 
-# ---- app protocol ports ----
-APP_PORTS = {
+INSECURE_PORTS = {
     21: "FTP",
-    22: "SSH",
     23: "TELNET",
     25: "SMTP",
-    53: "DNS",
-    80: "HTTP",
-    110: "POP3",
-    123: "NTP",
-    143: "IMAP",
-    161: "SNMP",
-    443: "HTTPS",
     445: "SMB",
     3389: "RDP"
 }
 
+# ---------------- TRACKING ----------------
+port_scan_tracker = defaultdict(set)
+ssh_tracker = defaultdict(list)
+icmp_tracker = defaultdict(list)
+dns_tracker = defaultdict(list)
+
+# ---------------- ALERT ----------------
+def alert(level, message):
+    timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    msg = f"[ALERT][{level}][{timestamp} UTC] {message}"
+    print(msg)
+    log_packet(msg)
+
+# ---------------- PACKET HANDLER ----------------
 def process_packet(packet):
-    stats["TOTAL"] += 1
+    now = time.time()
     timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
-    # ---- ARP ----
+    # -------- ARP --------
     if packet.haslayer(ARP):
-        stats["ARP"] += 1
-        output = f"[{timestamp} UTC] ARP packet detected"
-        print(output)
-        log_packet(output)
         return
 
-    # ---- IP ----
+    # -------- IP REQUIRED --------
     if not packet.haslayer(IP):
         return
 
     src_ip = packet[IP].src
     dst_ip = packet[IP].dst
 
-    protocol = "IP"
-    src_port = "-"
-    dst_port = "-"
-    app_proto = "-"
-
-    # ---- ICMP ----
+    # -------- ICMP FLOOD --------
     if packet.haslayer(ICMP):
-        stats["ICMP"] += 1
-        protocol = "ICMP"
+        icmp_tracker[src_ip].append(now)
+        icmp_tracker[src_ip] = [t for t in icmp_tracker[src_ip] if now - t <= TIME_WINDOW]
 
-    # ---- TCP ----
-    elif packet.haslayer(TCP):
-        stats["TCP"] += 1
-        protocol = "TCP"
-        src_port = packet[TCP].sport
-        dst_port = packet[TCP].dport
+        if len(icmp_tracker[src_ip]) > ICMP_THRESHOLD:
+            alert("MEDIUM", f"Possible ICMP flood from {src_ip}")
+        return
 
-    # ---- UDP ----
+    # -------- TCP / UDP --------
+    if packet.haslayer(TCP):
+        proto = "TCP"
+        sport = packet[TCP].sport
+        dport = packet[TCP].dport
+        flags = packet[TCP].flags
+
     elif packet.haslayer(UDP):
-        stats["UDP"] += 1
-        protocol = "UDP"
-        src_port = packet[UDP].sport
-        dst_port = packet[UDP].dport
+        proto = "UDP"
+        sport = packet[UDP].sport
+        dport = packet[UDP].dport
 
-    # ---- DNS ----
+    else:
+        return
+
+    # -------- INSECURE PROTOCOLS --------
+    if dport in INSECURE_PORTS:
+        alert("LOW", f"{INSECURE_PORTS[dport]} traffic detected from {src_ip} to {dst_ip}")
+
+    # -------- PORT SCAN (TCP SYN) --------
+    if packet.haslayer(TCP) and flags == "S":
+        port_scan_tracker[src_ip].add(dport)
+
+        if len(port_scan_tracker[src_ip]) > PORT_SCAN_THRESHOLD:
+            alert("HIGH", f"Port scan detected from {src_ip}")
+
+    # -------- SSH BRUTE FORCE --------
+    if dport == 22:
+        ssh_tracker[src_ip].append(now)
+        ssh_tracker[src_ip] = [t for t in ssh_tracker[src_ip] if now - t <= TIME_WINDOW]
+
+        if len(ssh_tracker[src_ip]) > SSH_BRUTE_THRESHOLD:
+            alert("HIGH", f"Possible SSH brute force from {src_ip}")
+
+    # -------- DNS ABUSE --------
     if packet.haslayer(DNS):
-        stats["DNS"] += 1
-        app_proto = "DNS"
+        dns_tracker[src_ip].append(now)
+        dns_tracker[src_ip] = [t for t in dns_tracker[src_ip] if now - t <= TIME_WINDOW]
 
-    # ---- Port-based application detection ----
-    for port in (src_port, dst_port):
-        if isinstance(port, int) and port in APP_PORTS:
-            app_proto = APP_PORTS[port]
-            break
+        if len(dns_tracker[src_ip]) > DNS_THRESHOLD:
+            alert("MEDIUM", f"Unusual DNS activity from {src_ip}")
 
+    # -------- NORMAL LOG --------
     output = (
-        f"[{timestamp} UTC] "
-        f"{src_ip}:{src_port} -> {dst_ip}:{dst_port} | "
-        f"{protocol} | {app_proto}"
+        f"[{timestamp} UTC] {src_ip}:{sport} -> {dst_ip}:{dport} | {proto}"
     )
-
-    print(output)
     log_packet(output)
 
-# ---- graceful shutdown ----
+# ---------------- SHUTDOWN ----------------
 def shutdown(sig, frame):
-    print("\n--- Capture Summary ---")
-    for k, v in stats.items():
-        print(f"{k}: {v}")
+    print("\n--- Phase 2 Monitor stopped ---")
     sys.exit(0)
 
 signal.signal(signal.SIGINT, shutdown)
 
-# ---- start ----
+# ---------------- START ----------------
 if __name__ == "__main__":
-    iface = "eth0"  # change if needed
-
-    print(f"Listening on {iface} (IP + ARP traffic)")
-    print("CTRL+C to stop\n")
+    print("Phase 2 Security Monitor Started")
+    print("Monitoring for scans, brute force, insecure protocols\n")
 
     sniff(
-        iface=iface,
+        iface=INTERFACE,
         filter="ip or arp",
         prn=process_packet,
         store=False
