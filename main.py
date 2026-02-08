@@ -1,204 +1,173 @@
-#!/usr/bin/env python3
-from flask import Flask, render_template_string, jsonify
-from scapy.all import sniff, TCP, IP
+import logging
+from flask import Flask, render_template, jsonify, request
+from scapy.all import sniff, IP, TCP, UDP
 import threading
-import subprocess
 import time
-from collections import defaultdict
+from datetime import datetime
+from collections import deque, defaultdict
 
-# =====================
-# Phase 3 Data Stores
-# =====================
-host_data = defaultdict(lambda: {
-    "events": set(),
-    "risk": 0,
-    "severity": "LOW"
-})
+# --- Configuration & State ---
+app = Flask(__name__)
+log = logging.getLogger('werkzeug')
+log.setLevel(logging.ERROR)  # Silence Flask logs
 
-alerts = []
-all_traffic = []
+# In-memory storage
+MAX_LOGS = 1000
+traffic_log = deque(maxlen=MAX_LOGS)
+alerts = deque(maxlen=MAX_LOGS)
+risk_score = 0
+start_time = datetime.now()
 
-EVENT_SCORES = {
-    "TELNET": 5,
-    "PORT_SCAN": 4
+# Protocol Map
+PROTO_MAP = {1: "ICMP", 6: "TCP", 17: "UDP"}
+
+# Suspicious Ports & Signatures (Simulated Rule Set)
+SUSPICIOUS_PORTS = {
+    21: "FTP (High Risk)",
+    22: "SSH (Medium Risk)",
+    23: "Telnet (High Risk)",
+    445: "SMB (High Risk)",
+    3389: "RDP (Medium Risk)"
 }
 
-# =====================
-# Packet Analysis
-# =====================
-def analyze_packet(pkt):
-    if IP in pkt:
-        src = pkt[IP].src
-        dst = pkt[IP].dst
-        proto = pkt[IP].proto
-        summary = pkt.summary()
+RISK_WEIGHTS = {
+    "HIGH": 10,
+    "MEDIUM": 5,
+    "LOW": 1
+}
 
-        # Store ALL traffic (Wireshark-style)
-        all_traffic.append({
-            "time": time.strftime("%H:%M:%S"),
-            "src": src,
-            "dst": dst,
-            "proto": proto,
-            "summary": summary
-        })
+# Track recent activity for correlation (simple port scan detection)
+ip_connection_count = defaultdict(lambda: defaultdict(int))
+last_cleanup = time.time()
 
-        if TCP in pkt:
-            dport = pkt[TCP].dport
-            sport = pkt[TCP].sport
+def calculate_severity(port, protocol):
+    if port in SUSPICIOUS_PORTS:
+        risk = SUSPICIOUS_PORTS[port]
+        if "High" in risk:
+            return "HIGH", risk
+        elif "Medium" in risk:
+            return "MEDIUM", risk
+    return "LOW", "Standard Traffic"
 
-            # TELNET Detection
-            if dport == 23 or sport == 23:
-                register_event(src, "TELNET")
+def update_risk_score(severity):
+    global risk_score
+    risk_score += RISK_WEIGHTS.get(severity, 0)
+    # Decay logic could go here, for now strictly cumulative for demo
 
-            # Simple PORT SCAN detection (SYN packets)
-            if pkt[TCP].flags == "S":
-                register_event(src, "PORT_SCAN")
+def process_packet(packet):
+    global risk_score, last_cleanup
+    
+    if not packet.haslayer(IP):
+        return
 
-def register_event(ip, event):
-    if event not in host_data[ip]["events"]:
-        host_data[ip]["events"].add(event)
-        host_data[ip]["risk"] += EVENT_SCORES[event]
-        update_severity(ip)
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    src_ip = packet[IP].src
+    dst_ip = packet[IP].dst
+    proto_num = packet[IP].proto
+    protocol = PROTO_MAP.get(proto_num, "OTHER")
+    length = len(packet)
 
-        alerts.append({
-            "time": time.strftime("%H:%M:%S"),
-            "ip": ip,
-            "event": event,
-            "risk": host_data[ip]["risk"],
-            "severity": host_data[ip]["severity"]
-        })
+    src_port = "-"
+    dst_port = "-"
+    flags = ""
+    
+    severity = "LOW"
+    description = "Normal Traffic"
 
-def update_severity(ip):
-    score = host_data[ip]["risk"]
-    if score >= 10:
-        host_data[ip]["severity"] = "HIGH"
-    elif score >= 5:
-        host_data[ip]["severity"] = "MEDIUM"
-    else:
-        host_data[ip]["severity"] = "LOW"
+    # Extract Ports and Analyze
+    if packet.haslayer(TCP):
+        src_port = packet[TCP].sport
+        dst_port = packet[TCP].dport
+        flags = packet[TCP].flags
+        
+        # Check destination port for rules
+        sev, desc = calculate_severity(dst_port, "TCP")
+        if sev != "LOW":
+            severity = sev
+            description = desc
 
-# =====================
-# Sniffer Thread
-# =====================
-def start_sniffer():
-    sniff(prn=analyze_packet, store=False)
+        # Correlation: Port Scan Detection (Simulated)
+        # If one source connects to > 5 ports on same dest in < 10 secs
+        # (Simplified for this snippet: just count unique ports per src->dst)
+        # Ideally would need distinct port tracking.
+        
+    elif packet.haslayer(UDP):
+        src_port = packet[UDP].sport
+        dst_port = packet[UDP].dport
+        
+        sev, desc = calculate_severity(dst_port, "UDP")
+        if sev != "LOW":
+            severity = sev
+            description = desc
 
-# =====================
-# Flask App
-# =====================
-app = Flask(__name__)
+    # Construct Packet Info
+    pkt_data = {
+        "id": len(traffic_log) + 1,
+        "timestamp": timestamp,
+        "src": src_ip,
+        "sport": src_port,
+        "dst": dst_ip,
+        "dport": dst_port,
+        "protocol": protocol,
+        "len": length,
+        "info": description if severity != "LOW" else f"{protocol} Packet",
+        "severity": severity
+    }
 
-HTML = """
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Phase 3 IDS Dashboard</title>
-    <style>
-        body { font-family: Arial; background:#111; color:#eee; }
-        h1 { color:#00ffcc; }
-        table { width:100%; border-collapse: collapse; margin-top:10px;}
-        th, td { border:1px solid #333; padding:6px; }
-        th { background:#222; }
-        .HIGH { color:red; }
-        .MEDIUM { color:orange; }
-        .LOW { color:lightgreen; }
-        button { padding:10px; margin:5px; }
-        .tab { display:none; }
-    </style>
-    <script>
-        function showTab(tab) {
-            document.getElementById("alerts").style.display="none";
-            document.getElementById("traffic").style.display="none";
-            document.getElementById(tab).style.display="block";
+    # Add to Traffic Log
+    traffic_log.appendleft(pkt_data) # Newest first
+
+    # Logic for Alerts
+    if severity in ["MEDIUM", "HIGH"]:
+        alert = {
+            "id": len(alerts) + 1,
+            "timestamp": timestamp,
+            "type": "Suspicious Activity",
+            "source": f"{src_ip}:{src_port}",
+            "target": f"{dst_ip}:{dst_port}",
+            "severity": severity,
+            "description": description
         }
+        alerts.appendleft(alert)
+        update_risk_score(severity)
 
-        async function refresh() {
-            const alerts = await fetch('/alerts').then(r=>r.json());
-            const traffic = await fetch('/traffic').then(r=>r.json());
+def sniffer_thread():
+    print("[-] Sniffer thread started...")
+    sniff(prn=process_packet, store=False)
 
-            let ahtml="";
-            alerts.forEach(a=>{
-                ahtml += `<tr>
-                    <td>${a.time}</td>
-                    <td>${a.ip}</td>
-                    <td>${a.event}</td>
-                    <td>${a.risk}</td>
-                    <td class="${a.severity}">${a.severity}</td>
-                </tr>`;
-            });
-            document.getElementById("alerts_body").innerHTML=ahtml;
+# --- Flask Routes ---
 
-            let thtml="";
-            traffic.slice(-200).forEach(t=>{
-                thtml += `<tr>
-                    <td>${t.time}</td>
-                    <td>${t.src}</td>
-                    <td>${t.dst}</td>
-                    <td>${t.proto}</td>
-                    <td>${t.summary}</td>
-                </tr>`;
-            });
-            document.getElementById("traffic_body").innerHTML=thtml;
-        }
-
-        setInterval(refresh, 2000);
-    </script>
-</head>
-<body onload="showTab('alerts')">
-
-<h1>Phase 3 IDS – Flask GUI</h1>
-
-<button onclick="showTab('alerts')">Alerts & Risk</button>
-<button onclick="showTab('traffic')">All Traffic (Wireshark View)</button>
-
-<div id="alerts" class="tab">
-<h2>Correlated Alerts</h2>
-<table>
-<tr>
-<th>Time</th><th>Source IP</th><th>Event</th><th>Risk</th><th>Severity</th>
-</tr>
-<tbody id="alerts_body"></tbody>
-</table>
-</div>
-
-<div id="traffic" class="tab">
-<h2>All Traffic</h2>
-<table>
-<tr>
-<th>Time</th><th>Source</th><th>Destination</th><th>Proto</th><th>Summary</th>
-</tr>
-<tbody id="traffic_body"></tbody>
-</table>
-</div>
-
-</body>
-</html>
-"""
-
-@app.route("/")
+@app.route('/')
 def index():
-    return render_template_string(HTML)
+    return render_template('index.html')
 
-@app.route("/alerts")
+@app.route('/api/stats')
+def get_stats():
+    # Calculate some summary stats
+    high_alerts = sum(1 for a in alerts if a['severity'] == 'HIGH')
+    med_alerts = sum(1 for a in alerts if a['severity'] == 'MEDIUM')
+    
+    return jsonify({
+        "risk_score": risk_score,
+        "alert_count": len(alerts),
+        "traffic_count": len(traffic_log),
+        "high_severity": high_alerts,
+        "medium_severity": med_alerts,
+        "uptime": (datetime.now() - start_time).seconds // 60
+    })
+
+@app.route('/api/alerts')
 def get_alerts():
-    return jsonify(alerts)
+    return jsonify(list(alerts))
 
-@app.route("/traffic")
+@app.route('/api/traffic')
 def get_traffic():
-    return jsonify(all_traffic)
+    return jsonify(list(traffic_log))
 
-# =====================
-# Auto-open Browser (Linux-safe)
-# =====================
-def open_browser():
-    time.sleep(2)  # give Flask time to start
-    subprocess.Popen(["xdg-open", "http://127.0.0.1:5000"])
-
-# =====================
-# Main
-# =====================
-if __name__ == "__main__":
-    print("[+] Starting Phase 3 IDS with Flask GUI")
-    threading.Thread(target=start_sniffer, daemon=True).start()
-    threading.Thread(target=open_browser, daemon=True).start()
-    app.run(host="0.0.0.0", port=5000, debug=False)
+if __name__ == '__main__':
+    # Start Sniffer in Background
+    t = threading.Thread(target=sniffer_thread, daemon=True)
+    t.start()
+    
+    print("[+] NetWatch v1.0 Starting Web Server on port 5000...")
+    app.run(debug=True, use_reloader=False, port=5000)
