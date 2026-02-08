@@ -1,5 +1,5 @@
 from scapy.all import sniff, IP, TCP
-from datetime import datetime, timedelta
+from datetime import datetime
 import os
 
 # =============================
@@ -8,7 +8,6 @@ import os
 INTERFACE = "eth0"
 LOG_FILE = "alerts.log"
 ALERT_THRESHOLD = 7       # Risk score threshold
-ALERT_INTERVAL = 5        # seconds, avoid flooding
 
 RISK_SCORES = {
     "TELNET": 5,
@@ -18,9 +17,11 @@ RISK_SCORES = {
     "PORT_SCAN": 4
 }
 
-host_events = {}
-host_risk = {}
-last_alert_time = {}   # track last alert to avoid spam
+# =============================
+# Tracking
+# =============================
+host_events = {}   # keep track of unique event types per host
+host_risk = {}     # cumulative risk per host
 
 # =============================
 # Utility functions
@@ -33,22 +34,19 @@ def log_alert(message):
         f.write(entry + "\n")
 
 def correlate(src_ip, event):
+    """Add event only if it hasn't been triggered yet for this host."""
     if src_ip not in host_events:
-        host_events[src_ip] = []
+        host_events[src_ip] = set()
         host_risk[src_ip] = 0
-        last_alert_time[src_ip] = datetime.min
 
-    host_events[src_ip].append(event)
-    host_risk[src_ip] += RISK_SCORES.get(event, 0)
+    if event not in host_events[src_ip]:
+        host_events[src_ip].add(event)
+        host_risk[src_ip] += RISK_SCORES.get(event, 0)
 
-    # Only alert if last alert > ALERT_INTERVAL seconds ago
-    now = datetime.now()
-    if (now - last_alert_time[src_ip]).total_seconds() >= ALERT_INTERVAL:
-        if host_risk[src_ip] >= ALERT_THRESHOLD:
-            log_alert(f"[CRITICAL] {src_ip} | Risk Score: {host_risk[src_ip]} | Events: {host_events[src_ip]}")
-        else:
-            log_alert(f"[INFO] {src_ip} | Risk Score: {host_risk[src_ip]} | Events: {host_events[src_ip]}")
-        last_alert_time[src_ip] = now
+        # Only alert when a **new unique event** is added
+        risk = host_risk[src_ip]
+        status = "HIGH" if risk >= ALERT_THRESHOLD else "MEDIUM"
+        log_alert(f"[ALERT] {src_ip} | Risk: {status} ({risk}) | Event: {event}")
 
 # =============================
 # Packet analysis
@@ -60,6 +58,7 @@ def analyze_packet(packet):
     src_ip = packet[IP].src
     dst_port = packet[TCP].dport
 
+    # Detect specific protocols
     if dst_port == 23:
         correlate(src_ip, "TELNET")
     elif dst_port == 21:
@@ -67,19 +66,21 @@ def analyze_packet(packet):
     elif dst_port == 80:
         correlate(src_ip, "HTTP")
 
+    # Simple port scan detection (SYN packet)
     if packet[TCP].flags == "S":
         correlate(src_ip, "PORT_SCAN")
 
 # =============================
-# Summary
+# Summary report
 # =============================
 def print_summary():
     print("\n========== SECURITY SUMMARY ==========")
-    for ip, score in host_risk.items():
-        risk = "HIGH" if score >= ALERT_THRESHOLD else "MEDIUM"
+    for ip, events in host_events.items():
+        risk = host_risk[ip]
+        status = "HIGH" if risk >= ALERT_THRESHOLD else "MEDIUM"
         print(f"Host: {ip}")
-        print(f"  Risk: {risk} ({score})")
-        print(f"  Events: {', '.join(host_events[ip])}")
+        print(f"  Risk: {status} ({risk})")
+        print(f"  Events: {', '.join(events)}")
         print("----------------------------------")
     print("=====================================\n")
 
