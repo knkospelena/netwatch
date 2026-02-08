@@ -2,7 +2,7 @@
 from flask import Flask, render_template_string, jsonify
 from scapy.all import sniff, TCP, IP
 import threading
-import webbrowser
+import subprocess
 import time
 from collections import defaultdict
 
@@ -50,7 +50,7 @@ def analyze_packet(pkt):
             if dport == 23 or sport == 23:
                 register_event(src, "TELNET")
 
-            # Simple PORT SCAN detection (many SYNs)
+            # Simple PORT SCAN detection (SYN packets)
             if pkt[TCP].flags == "S":
                 register_event(src, "PORT_SCAN")
 
@@ -188,9 +188,17 @@ def get_traffic():
     return jsonify(all_traffic)
 
 # =====================
+# Auto-open Browser (Linux-safe)
+# =====================
+def open_browser():
+    time.sleep(2)  # give Flask time to start
+    subprocess.Popen(["xdg-open", "http://127.0.0.1:5000"])
+
+# =====================
 # Main
 # =====================
 if __name__ == "__main__":
+    print("[+] Starting Phase 3 IDS with Flask GUI")
     threading.Thread(target=start_sniffer, daemon=True).start()
-    webbrowser.open("http://127.0.0.1:5000")
+    threading.Thread(target=open_browser, daemon=True).start()
     app.run(host="0.0.0.0", port=5000, debug=False)
