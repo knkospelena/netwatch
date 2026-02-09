@@ -50,17 +50,20 @@ def calculate_severity(port, protocol):
     return "LOW", "Standard Traffic"
 
 def print_banner():
-    banner = r"""
- _   _      _   __        __      _       _     
-| \ | | ___| |_| \      / /__  __| |_ ___| |__  
-|  \| |/ _ \ __| \ \ /\ / / _ \/ _` |/ __| '_ \ 
-| |\  |  __/ |_|  \ V  V /  __/ (_| | (__| | | |
-|_| \_|\___|\__|   \_/\_/ \___|\__,_|\___|_| |_|
-
-        Network Traffic Monitoring & Detection
-                NetWatch v1.0
-"""
-    print(banner)
+    # ANSI Cyan color for the banner
+    print("\033[96m")
+    print(r"""
+███╗   ██╗███████╗████████╗██╗    ██╗ █████╗ ████████╗██████╗██╗  ██╗
+████╗  ██║██╔════╝╚══██╔══╝██║    ██║██╔══██╗╚══██╔══╝██╔════╝██║  ██║
+██╔██╗ ██║█████╗     ██║   ██║ █╗ ██║███████║   ██║   ██║     ███████║
+██║╚██╗██║██╔══╝     ██║   ██║███╗██║██╔══██║   ██║   ██║     ██╔══██║
+██║ ╚████║███████╗   ██║   ╚███╔███╔╝██║  ██║   ██║   ╚██████╗██║  ██║
+╚═╝  ╚═══╝╚══════╝   ╚═╝    ╚══╝╚══╝ ╚═╝  ╚═╝   ╚═╝    ╚═════╝╚═╝  ╚═╝
+    """)
+    print("      Network Traffic Monitoring & Detection | SOC Dashboard")
+    print("                    v1.0 - Ready for Action")
+    print("\033[0m")
+    print("-" * 70)
 
 def update_risk_score(severity):
     global risk_score
