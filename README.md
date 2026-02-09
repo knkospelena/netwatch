@@ -40,7 +40,7 @@ Inspired by tools like **nmap, Wireshark, and Metasploit**, NetWatch is designed
 
 1. **Clone the repository**:
    ```bash
-   git clone https://github.com/knkospelena/NetWatch.git
+   git clone https://github.com/knkospelena/netwatch.git
    cd NetWatch
    ```
 
