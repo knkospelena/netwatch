@@ -49,6 +49,19 @@ def calculate_severity(port, protocol):
             return "MEDIUM", risk
     return "LOW", "Standard Traffic"
 
+def print_banner():
+    banner = r"""
+ _   _      _   __        __      _       _     
+| \ | | ___| |_| \      / /__  __| |_ ___| |__  
+|  \| |/ _ \ __| \ \ /\ / / _ \/ _` |/ __| '_ \ 
+| |\  |  __/ |_|  \ V  V /  __/ (_| | (__| | | |
+|_| \_|\___|\__|   \_/\_/ \___|\__,_|\___|_| |_|
+
+        Network Traffic Monitoring & Detection
+                NetWatch v1.0
+"""
+    print(banner)
+
 def update_risk_score(severity):
     global risk_score
     risk_score += RISK_WEIGHTS.get(severity, 0)
@@ -165,6 +178,8 @@ def get_traffic():
     return jsonify(list(traffic_log))
 
 if __name__ == '__main__':
+    print_banner()
+    
     # Start Sniffer in Background
     t = threading.Thread(target=sniffer_thread, daemon=True)
     t.start()
